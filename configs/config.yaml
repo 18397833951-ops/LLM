@@ -1,5 +1,6 @@
 defaults:
   - data: tinystories
+  - tokenizer: bpe
   - _self_
 
 # 默认只检查已有数据，下载需明确指定 stat=prepare。

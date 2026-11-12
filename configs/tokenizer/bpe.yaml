@@ -1,0 +1,10 @@
+# 词表包括 256 个字节、3 个特殊 token 和学习到的合并 token。
+vocab_size: 8192
+min_frequency: 2
+output_dir: artifacts/tokenizer
+
+# null 表示使用当前准备好的全部训练故事，不是下载上游全部数据。
+train_documents: null
+check_documents: null
+text: "Once upon a time, there was a little cat."
+preview_tokens: 40

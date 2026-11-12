@@ -79,7 +79,7 @@ python main.py --cfg job
 python main.py stat=prepare data.revision=COMMIT_SHA data.output_dir=data/reproduced
 ```
 
-`stat` 目前只有 `prepare`、`inspect`，不存在的任务会报错。主配置默认 `inspect`，直接运行不触发下载。相对路径基于启动目录，因此请始终在项目根目录运行。Hydra 不切换工作目录，每次执行的日志和配置保存在 `runs/`。
+数据任务使用 `stat=prepare`、`stat=inspect`；分词器任务另见 [分词器说明](tokenizer.md)。不存在的任务会报错。主配置默认 `inspect`，直接运行不触发下载。相对路径基于启动目录，因此请始终在项目根目录运行。Hydra 不切换工作目录，每次执行的日志和配置保存在 `runs/`。
 
 采样是固定 seed 的缓冲区 shuffle，不是对整个数据集做全局均匀随机抽样。固定 commit、配置和依赖版本有助于复现；manifest 同时保存实际输出文件校验值。
 

@@ -1,6 +1,6 @@
 # 从零训练英文语言模型
 
-当前完成的是第一步：准备和检查 TinyStories 数据。分词器和模型将在后续实现。
+当前已实现 TinyStories 数据准备、检查和手写 BPE 分词器。Transformer 和模型训练将在后续实现。
 
 ## 运行方法
 
@@ -25,8 +25,26 @@ python main.py stat=inspect
 
 如果命令报错，先停止后续步骤，保留完整报错信息。
 
+## 数据检查通过后：训练分词器
+
+已完成数据准备的同学不用重新下载。在服务器项目根目录，依次执行：
+
+```bash
+# 学习并保存 BPE 词表，只使用训练集
+python main.py stat=tokenizer
+
+# 检查文字 → 编号 → 原文是否一致
+python main.py stat=tokenizer_check
+```
+
+这两条命令只读本地数据、不联网，也不需要 GPU。检查结果 `passed: true`、`issues: []`，且两组 `roundtrip_mismatches: 0` 表示还原检查通过。它不代表语言模型已经训练完成。
+
+词表保存在 `artifacts/tokenizer/tokenizer.json`，训练和检查摘要也在该目录。已经训练过词表时直接执行检查，训练命令不会覆盖已有词表。
+
+算法说明和可选参数见 [分词器说明](docs/tokenizer.md)，首次按上面两条命令执行即可。
+
 ## 可选参考
 
-正常使用只需上面的三步。调整数据量、环境配置、Hydra 参数及代码测试见 [数据准备进阶说明](docs/data_usage.md)，不需要逐条执行。
+调整数据量、环境配置及代码测试见 [数据准备进阶说明](docs/data_usage.md)。这些是可选参考，不需要逐条执行。
 
 数据来源：[TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories)。
