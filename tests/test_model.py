@@ -13,7 +13,7 @@ from src.data import file_hash, write_json
 from src.model import CausalAttention, GPT
 from src.token_data import TokenStream
 from src.tokenizer import BPETokenizer
-from src.training import benchmark_or_train, generate, load_checkpoint, run_task, setup
+from src.training import benchmark_or_train, generate, load_checkpoint, run_task, setup, training_plan, processed_tokens, update
 
 
 torch.set_num_threads(1)
@@ -123,6 +123,89 @@ class TrainingTests(unittest.TestCase):
         batches = list(stream.batches(2, torch.device("cpu")))
         self.assertEqual(sum(y.numel() for x, y in batches), 25)
         self.assertEqual(int(batches[-1][1][0, -1]), 25)
+
+    def test_epoch_covers_every_target_once_including_tail(self):
+        path = self.root / "epoch.bin"
+        np.arange(70, dtype="uint16").tofile(path)
+        stream = TokenStream(path, "uint16", 8)
+        cfg = {**self.cfg["train"], "batch_size": 2, "grad_accum": 3,
+               "epochs": 3, "max_steps": None}
+        plan = training_plan(cfg, stream)
+        self.assertEqual(plan["steps_per_epoch"], 2)
+        self.assertEqual(plan["total_steps"], 6)
+        for _ in range(3):
+            targets = []
+            for index in range(2):
+                for x, y in stream.epoch_batches(index, 2, 3, torch.device("cpu")):
+                    targets.extend(y[y != -100].tolist())
+            self.assertEqual(targets, list(range(1, 70)))
+        self.assertEqual(processed_tokens(1, plan), 48)
+        self.assertEqual(processed_tokens(2, plan), 69)
+        self.assertEqual(processed_tokens(6, plan), 207)
+
+    def test_epoch_tail_gradient_uses_valid_token_weights(self):
+        import copy
+        path = self.root / "tail.bin"
+        np.arange(70, dtype="uint16").tofile(path)
+        stream = TokenStream(path, "uint16", 8)
+        model = GPT(128, 1, 16, 2, 8, dropout=0)
+        reference = copy.deepcopy(model)
+        cfg = {**self.cfg["train"], "batch_size": 2, "grad_accum": 3, "grad_clip": 1e9}
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        reference_optimizer = torch.optim.SGD(reference.parameters(), lr=0.01)
+        batches = list(stream.epoch_batches(1, 2, 3, torch.device("cpu")))
+        x, y = [torch.cat(parts) for parts in zip(*batches)]
+        _, loss = reference(x, y)
+        loss.backward()
+        reference_optimizer.step()
+        actual = update(model, stream, optimizer, torch.amp.GradScaler("cuda", enabled=False),
+                        torch.Generator(), cfg, torch.device("cpu"), "fp32", epoch_step=1)
+        self.assertAlmostEqual(actual, float(loss.detach()), places=5)
+        for left, right in zip(model.parameters(), reference.parameters()):
+            torch.testing.assert_close(left, right, rtol=1e-5, atol=1e-7)
+
+    def test_epoch_resume_and_epoch_end_validation(self):
+        import copy
+        import json
+        full = copy.deepcopy(self.cfg)
+        full["train"].update(max_steps=None, epochs=2, eval_every=5000, save_every=5000,
+                             sample_every=5000, output_dir=str(self.root / "full_epochs"))
+        result = benchmark_or_train(full, "train", self.run_dir)
+        reference = load_checkpoint(Path(full["train"]["output_dir"]) / "last.pt")
+        self.assertEqual(result["epochs_completed"], 2)
+        self.assertEqual(reference["seen_tokens"], result["training_plan"]["targets_per_epoch"] * 2)
+        rows = [json.loads(line) for line in (Path(full["train"]["output_dir"]) / "metrics.jsonl").read_text().splitlines()]
+        boundaries = [row for row in rows if row.get("epoch_end")]
+        self.assertEqual(len(boundaries), 2)
+        self.assertTrue(all("val_loss" in row for row in boundaries))
+        resumed_cfg = copy.deepcopy(full)
+        resumed_cfg["train"].update(output_dir=str(self.root / "resumed_epochs"), stop_after=1)
+        benchmark_or_train(resumed_cfg, "train", self.run_dir)
+        checkpoint = Path(resumed_cfg["train"]["output_dir"]) / "last.pt"
+        resumed_cfg["train"].update(resume=str(checkpoint), stop_after=None)
+        benchmark_or_train(resumed_cfg, "train", self.run_dir)
+        resumed = load_checkpoint(checkpoint)
+        for key in reference["model"]:
+            torch.testing.assert_close(reference["model"][key], resumed["model"][key], rtol=0, atol=0)
+
+    def test_keyboard_interrupt_keeps_last_periodic_checkpoint(self):
+        import src.training as training
+        self.cfg["train"].update(max_steps=None, epochs=2, save_every=2, eval_every=5000, sample_every=5000)
+        original_update = training.update
+        calls = 0
+        def interrupt(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise KeyboardInterrupt
+            return original_update(*args, **kwargs)
+        with patch("src.training.update", side_effect=interrupt) as mocked_update:
+            with self.assertRaises(KeyboardInterrupt):
+                benchmark_or_train(self.cfg, "train", self.run_dir)
+        # Mock 的调用记录会持有 memmap 参数，释放后 Windows 才允许清理测试目录。
+        mocked_update.reset_mock()
+        checkpoint = load_checkpoint(Path(self.cfg["train"]["output_dir"]) / "last.pt")
+        self.assertEqual(checkpoint["step"], 2)
 
     def test_resume_matches_uninterrupted_training(self):
         import copy

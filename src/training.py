@@ -22,13 +22,18 @@ def setup(cfg):
     train = cfg["train"]
     if tuple(int(part) for part in torch.__version__.split("+")[0].split(".")[:2]) < (2, 4):
         raise RuntimeError("模型任务要求 PyTorch >= 2.4；数据与分词器任务不受影响")
-    for name in ("batch_size", "grad_accum", "max_steps", "log_every", "eval_every", "save_every", "sample_every"):
+    for name in ("batch_size", "grad_accum", "log_every", "eval_every", "save_every", "sample_every"):
         if type(train[name]) is not int or train[name] < 1:
             raise ValueError(f"train.{name} 必须为正整数")
     if not 0 < train["min_lr"] <= train["lr"] or train["grad_clip"] <= 0:
         raise ValueError("学习率或 grad_clip 无效")
-    if type(train["warmup_steps"]) is not int or not 0 <= train["warmup_steps"] < train["max_steps"]:
-        raise ValueError("warmup_steps 必须满足 0 <= warmup_steps < max_steps")
+    if train["max_steps"] is None:
+        if type(train.get("epochs")) is not int or train["epochs"] < 1:
+            raise ValueError("train.epochs 必须为正整数")
+    elif type(train["max_steps"]) is not int or train["max_steps"] < 1:
+        raise ValueError("max_steps 必须为正整数或 null")
+    if type(train["warmup_steps"]) is not int or train["warmup_steps"] < 0:
+        raise ValueError("warmup_steps 必须为非负整数")
     if train["stop_after"] is not None and (type(train["stop_after"]) is not int or train["stop_after"] < 1):
         raise ValueError("stop_after 必须为正整数或 null")
     device = torch.device(train["device"])
@@ -68,25 +73,52 @@ def learning_rate(step, cfg):
     return cfg["min_lr"] + 0.5 * (cfg["lr"] - cfg["min_lr"]) * (1 + math.cos(math.pi * min(1, progress)))
 
 
-def update(model, stream, optimizer, scaler, rng, cfg, device, precision):
+def training_plan(cfg, stream):
+    per_update = cfg["batch_size"] * cfg["grad_accum"] * stream.context
+    targets = len(stream.tokens) - 1
+    by_epoch = cfg["max_steps"] is None
+    per_epoch = math.ceil(targets / per_update)
+    total = per_epoch * cfg["epochs"] if by_epoch else cfg["max_steps"]
+    if cfg["warmup_steps"] >= total:
+        raise ValueError(f"warmup_steps 必须小于总更新步数 {total}")
+    return {"mode": "epoch" if by_epoch else "steps", "total_steps": total,
+            "steps_per_epoch": per_epoch, "targets_per_epoch": targets,
+            "tokens_per_step": per_update, "epochs": cfg.get("epochs") if by_epoch else None}
+
+
+def processed_tokens(step, plan):
+    if plan["mode"] == "steps":
+        return step * plan["tokens_per_step"]
+    epochs, within = divmod(step, plan["steps_per_epoch"])
+    return epochs * plan["targets_per_epoch"] + min(within * plan["tokens_per_step"], plan["targets_per_epoch"])
+
+
+def update(model, stream, optimizer, scaler, rng, cfg, device, precision, epoch_step=None):
     model.train()
     optimizer.zero_grad(set_to_none=True)
     total_loss = 0
-    for _ in range(cfg["grad_accum"]):
-        x, y = stream.sample(cfg["batch_size"], rng, device)
+    full_size = cfg["batch_size"] * cfg["grad_accum"] * stream.context
+    if epoch_step is None:
+        batches = (stream.sample(cfg["batch_size"], rng, device) for _ in range(cfg["grad_accum"]))
+        target_count = full_size
+    else:
+        batches = stream.epoch_batches(epoch_step, cfg["batch_size"], cfg["grad_accum"], device)
+        target_count = min(full_size, len(stream.tokens) - 1 - epoch_step * full_size)
+    for x, y in batches:
+        count = int((y != -100).sum())
         with amp(device, precision):
             _, loss = model(x, y)
         if not torch.isfinite(loss):
             raise FloatingPointError("训练 loss 非有限值，已停止更新")
-        total_loss += float(loss.detach())
-        scaler.scale(loss / cfg["grad_accum"]).backward()
+        total_loss += float(loss.detach()) * count
+        scaler.scale(loss * (count / target_count)).backward()
     scaler.unscale_(optimizer)
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
     if not torch.isfinite(grad_norm):
         raise FloatingPointError("梯度非有限值，已停止更新；FP16 可尝试 BF16 或 FP32")
     scaler.step(optimizer)
     scaler.update()
-    return total_loss / cfg["grad_accum"]
+    return total_loss / target_count
 
 
 @torch.no_grad()
@@ -149,12 +181,13 @@ def generate(model, tokenizer, cfg, device, precision):
             "new_tokens": len(ids) - input_length}
 
 
-def save_checkpoint(path, model, optimizer, scaler, rng, step, best, model_cfg, cfg, meta, precision):
+def save_checkpoint(path, model, optimizer, scaler, rng, step, best, model_cfg, cfg, meta, precision, plan=None):
     value = {"version": 1, "model": model.state_dict(), "model_config": model_cfg,
              "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(),
              "rng": rng.get_state(), "torch_rng": torch.get_rng_state(),
              "cuda_rng": torch.cuda.get_rng_state_all() if next(model.parameters()).is_cuda else [],
-             "step": step, "seen_tokens": step * cfg["train"]["batch_size"] * cfg["train"]["grad_accum"] * model.context,
+             "step": step, "seen_tokens": processed_tokens(step, plan) if plan else step * cfg["train"]["batch_size"] * cfg["train"]["grad_accum"] * model.context,
+             "training_plan": plan,
              "best_val_loss": best, "config": cfg, "data_key": meta["key"], "precision": precision,
              "tokenizer_sha256": meta["signature"]["tokenizer_sha256"]}
     temporary = path.with_suffix(".tmp")
@@ -176,6 +209,8 @@ def restore(checkpoint, model, optimizer, scaler, rng, model_cfg, cfg, meta, pre
             "weight_decay", "beta1", "beta2", "grad_clip")
     if any(checkpoint["config"]["train"][key] != cfg["train"][key] for key in keys) or checkpoint["precision"] != precision:
         raise ValueError("续训须保持原训练预算、优化参数及精度；stop_after 和日志间隔可调整")
+    if cfg["train"]["max_steps"] is None and checkpoint["config"]["train"].get("epochs") != cfg["train"].get("epochs"):
+        raise ValueError("续训必须保持原 epochs 计划")
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     scaler.load_state_dict(checkpoint["scaler"])
@@ -202,6 +237,9 @@ def benchmark_or_train(cfg, task, run_dir):
     model = GPT(**model_cfg).to(device)
     logging.info("模型参数 %s (%.4fB)，device=%s，precision=%s", model.parameter_count(), model.parameter_count()/1e9, device, precision)
     streams = {split: TokenStream(token_dir / f"{split}.bin", meta["dtype"], model.context) for split in ("train", "val")}
+    plan = training_plan(train, streams["train"])
+    schedule = {**train, "max_steps": plan["total_steps"]}
+    logging.info("训练计划：%s", plan)
     optimizer = torch.optim.AdamW(model.parameters(), lr=train["lr"],
                                  betas=(train["beta1"], train["beta2"]), weight_decay=train["weight_decay"])
     scaler = torch.amp.GradScaler("cuda", enabled=precision == "fp16")
@@ -231,7 +269,8 @@ def benchmark_or_train(cfg, task, run_dir):
                   "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                   "seconds": elapsed, "tokens_per_second": speed, "last_loss": loss,
                   "seconds_per_step": elapsed / bench["steps"], "tokens_per_step": tokens_per_step,
-                  "estimated_training_hours": train["max_steps"] * tokens_per_step / speed / 3600,
+                  "training_plan": plan,
+                  "estimated_training_hours": processed_tokens(plan["total_steps"], plan) / speed / 3600,
                   "estimate_budget_tokens": bench["estimate_tokens"],
                   "estimate_budget_hours": bench["estimate_tokens"] / speed / 3600,
                   "peak_allocated_gib": torch.cuda.max_memory_allocated(device) / 1024**3 if device.type == "cuda" else None,
@@ -242,13 +281,15 @@ def benchmark_or_train(cfg, task, run_dir):
     start_step, best = 0, float("inf")
     if train["resume"]:
         checkpoint = load_checkpoint(train["resume"])
+        if checkpoint.get("training_plan") not in (None, plan):
+            raise ValueError("续训的遍历计划与 checkpoint 不一致")
         start_step, best = restore(checkpoint, model, optimizer, scaler, rng, model_cfg, cfg, meta, precision)
         if Path(train["resume"]).resolve().parent != output:
             raise ValueError("续训 output_dir 必须与 checkpoint 所在目录一致")
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "config.json", cfg)
-    write_json(output / "model_info.json", {"parameters": model.parameter_count(), "model_config": model_cfg, "data": meta})
-    end_step = min(train["max_steps"], train["stop_after"] or train["max_steps"])
+    write_json(output / "model_info.json", {"parameters": model.parameter_count(), "model_config": model_cfg, "data": meta, "training_plan": plan})
+    end_step = min(plan["total_steps"], train["stop_after"] or plan["total_steps"])
     if start_step >= end_step:
         raise ValueError("checkpoint 已达到本次目标步数，请检查 stop_after/max_steps")
     if not start_step:
@@ -257,46 +298,54 @@ def benchmark_or_train(cfg, task, run_dir):
         append_json(output / "metrics.jsonl", {"step": 0, "val_loss": initial["loss"], "val_tokens": initial["tokens"]})
         append_json(output / "samples.jsonl", {"step": 0, **generate(model, tokenizer, cfg["generate"], device, precision)})
     measured_tokens = measured_seconds = 0
-    with logging_redirect_tqdm(), progress_bar(total=train["max_steps"], initial=start_step,
+    with logging_redirect_tqdm(), progress_bar(total=plan["total_steps"], initial=start_step,
                                                config=cfg.get("progress"), desc="Train", unit="step") as progress:
         for step in range(start_step, end_step):
-            lr = learning_rate(step, train)
+            epoch_step = step % plan["steps_per_epoch"] if plan["mode"] == "epoch" else None
+            epoch_number = step // plan["steps_per_epoch"] + 1 if epoch_step is not None else None
+            description = f"Train epoch {epoch_number}/{plan['epochs']}" if epoch_number is not None else "Train"
+            progress.set_description(description, refresh=False)
+            lr = learning_rate(step, schedule)
             for group in optimizer.param_groups:
                 group["lr"] = lr
             synchronize(device)
             started = time.perf_counter()
-            loss = update(model, streams["train"], optimizer, scaler, rng, train, device, precision)
+            loss = update(model, streams["train"], optimizer, scaler, rng, train, device, precision, epoch_step=epoch_step)
             synchronize(device)
             elapsed = time.perf_counter() - started
-            measured_tokens += tokens_per_step
+            current_tokens = processed_tokens(step + 1, plan) - processed_tokens(step, plan)
+            measured_tokens += current_tokens
             measured_seconds += elapsed
             completed = step + 1
-            record = {"step": completed, "seen_tokens": completed * tokens_per_step,
-                      "train_loss": loss, "lr": lr, "tokens_per_second": tokens_per_step / elapsed}
+            epoch_end = epoch_step is not None and epoch_step + 1 == plan["steps_per_epoch"]
+            record = {"step": completed, "seen_tokens": processed_tokens(completed, plan),
+                      "epoch": epoch_number, "epoch_end": epoch_end,
+                      "train_loss": loss, "lr": lr, "tokens_per_second": current_tokens / elapsed}
             is_best = False
-            if completed % train["eval_every"] == 0 or completed == end_step:
-                progress.set_description("Train / validation")
+            if completed % train["eval_every"] == 0 or completed == end_step or epoch_end:
+                progress.set_description(description + " / validation")
                 evaluation = evaluate(model, streams["val"], train["batch_size"], device, precision, cfg["eval"]["max_tokens"])
                 record.update(val_loss=evaluation["loss"], val_tokens=evaluation["tokens"])
                 is_best = evaluation["loss"] < best
                 best = min(best, evaluation["loss"])
             append_json(output / "metrics.jsonl", record)
             if completed % train["log_every"] == 0 or completed == end_step:
-                logging.info("step %s/%s loss %.4f val %s tokens/s %.0f", completed, train["max_steps"], loss, record.get("val_loss"), measured_tokens/measured_seconds)
-            if completed % train["sample_every"] == 0 or completed == end_step:
-                progress.set_description("Train / sampling")
+                logging.info("step %s/%s loss %.4f val %s tokens/s %.0f", completed, plan["total_steps"], loss, record.get("val_loss"), measured_tokens/measured_seconds)
+            if completed % train["sample_every"] == 0 or completed == end_step or epoch_end:
+                progress.set_description(description + " / sampling")
                 append_json(output / "samples.jsonl", {"step": completed, **generate(model, tokenizer, cfg["generate"], device, precision)})
-            if completed % train["save_every"] == 0 or completed == end_step or is_best:
-                progress.set_description("Train / saving")
-                save_checkpoint(output / "last.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision)
+            if completed % train["save_every"] == 0 or completed == end_step or epoch_end or is_best:
+                progress.set_description(description + " / saving")
+                save_checkpoint(output / "last.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision, plan)
             if is_best:
-                save_checkpoint(output / "best.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision)
-            progress.set_description("Train", refresh=False)
+                save_checkpoint(output / "best.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision, plan)
+            progress.set_description(description, refresh=False)
             progress.set_postfix(loss=f"{loss:.4f}", best_val=f"{best:.4f}" if math.isfinite(best) else "--",
                                  tok_s=f"{measured_tokens/measured_seconds:.0f}", refresh=False)
             progress.update(1)
-    return {"output_dir": str(output), "step": end_step, "seen_tokens": end_step*tokens_per_step,
-            "best_val_loss": best, "parameters": model.parameter_count(), "completed_plan": end_step == train["max_steps"]}
+    return {"output_dir": str(output), "step": end_step, "seen_tokens": processed_tokens(end_step, plan),
+            "training_plan": plan, "epochs_completed": end_step // plan["steps_per_epoch"] if plan["mode"] == "epoch" else None,
+            "best_val_loss": best, "parameters": model.parameter_count(), "completed_plan": end_step == plan["total_steps"]}
 
 
 def plot_training(cfg):

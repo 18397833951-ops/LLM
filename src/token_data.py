@@ -90,3 +90,20 @@ class TokenStream:
             y = np.array(self.tokens[start + 1:start + count + 1], dtype=np.int64).reshape(batch, length)
             yield torch.from_numpy(x).to(device), torch.from_numpy(y).to(device)
             start += count
+
+    def epoch_batches(self, update_index, batch_size, grad_accum, device):
+        """一次更新依次读取若干 micro-batch；尾部补齐但不计入 loss。"""
+        available = len(self.tokens) - 1
+        start = update_index * batch_size * grad_accum * self.context
+        end = min(start + batch_size * grad_accum * self.context, available)
+        if not 0 <= start < available:
+            raise ValueError("epoch 更新位置越界")
+        for batch_start in range(start, end, batch_size * self.context):
+            offsets = list(range(batch_start, min(batch_start + batch_size * self.context, end), self.context))
+            x = np.zeros((len(offsets), self.context), dtype=np.int64)
+            y = np.full((len(offsets), self.context), -100, dtype=np.int64)
+            for row, offset in enumerate(offsets):
+                count = min(self.context, end - offset)
+                x[row, :count] = self.tokens[offset:offset + count]
+                y[row, :count] = self.tokens[offset + 1:offset + count + 1]
+            yield torch.from_numpy(x).to(device), torch.from_numpy(y).to(device)

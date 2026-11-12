@@ -16,9 +16,9 @@
 
 首次测速或训练会自动将本地故事编码为 token 流，每篇末尾加 EOS，不联网。缓存位于 `artifacts/tokens/`，按数据与词表文件 SHA256 区分，文件损坏会报错。
 
-训练窗口通过固定种子的独立 RNG 有放回采样，标签比输入向后错一位；窗口可跨故事边界，由 EOS 标记，不另外重置 attention。累计 token 数并不等于不同文本总量。
+默认按 epoch 依次遍历本地训练 token 流，标签比输入向后错一位；窗口可跨故事边界，由 EOS 标记，不另外重置 attention。每遍的有效目标 token 恰好覆盖一次，尾批补齐位置的标签设为 -100，不计入 loss，梯度按实际有效 token 数加权。每遍顺序固定，原始文档顺序由数据准备时的 shuffle 决定。显式设置 train.max_steps 时使用兼容的随机窗口模式，不保证完整遍历。
 
-验证按固定顺序遍历，默认前 100000 个目标 token，包括不足完整窗口的尾部。loss 按有效目标 token 数加权，perplexity 为相同词表下 loss 的指数。`eval.max_tokens=null` 可评估全部验证数据。
+验证按固定顺序遍历，默认全部验证目标 token，包括不足完整窗口的尾部。loss 按有效目标 token 数加权，perplexity 为相同词表下 loss 的指数。`eval.max_tokens=null` 可评估全部验证数据。
 
 ## 测速
 
@@ -44,11 +44,13 @@ auto 精度在 CUDA 上优先 BF16，否则 FP16；CPU 用 FP32。FP16 配套 Gr
 python main.py stat=train
 ```
 
-当前默认 1000 步，8×4 配置累计约 819.2 万目标 token。之前已完成的 4×4、1000 步实验处理了约 409.6 万 token。当前训练数据加入 EOS 后约 385 万 token，仍属于流程验证规模；随机窗口采样不保证严格遍历，跑完预设步骤不代表充分预训练，效果改进需要更多数据覆盖和计算预算，重复少量故事可能过拟合。
+默认 train.epochs=3、train.max_steps=null，由实际编码 token 数自动计算每个 epoch 和总更新步数。8×4、context=256 时每步最多 8192 个有效目标 token；每遍末尾最后一步可能少于此数。训练开始会输出 training_plan，日志和 checkpoint 记录实际 seen_tokens。
+
+当前本地若仍只有 1 万篇故事，跑 3 个 epoch 也只是把这 1 万篇学习三遍，不会自动下载全量。全量实验须准备对应全量数据与词表，并使用 experiment=full，详见 [全量训练流程](full_run.md)。
 
 优化使用 AdamW、warmup、cosine 衰减、梯度累积、梯度裁剪和可选混合精度。保存训练初始、定期及结束时的固定提示词续写，便于对比。
 
-默认训练目录 `artifacts/gpt100m/`：
+默认训练目录 `artifacts/gpt100m_epochs/`；全量配置使用 `artifacts/gpt100m_full/`：
 
 | 文件 | 含义 |
 |---|---|
@@ -60,23 +62,23 @@ python main.py stat=train
 
 完整 checkpoint 包含模型、优化器、GradScaler、采样 RNG、CPU/CUDA RNG 和步数；学习率由保存的计划参数与步数重算。每个含优化器的 checkpoint 约 GB 级，需为 best/last 和临时写入留足磁盘空间。
 
-默认每 250 步验证、保存、生成，结束时也执行。意外中断只能从最近一次保存恢复，期间未保存步骤会丢失。输出目录存在且未设置 resume 时不会覆盖。
+默认每 5000 步验证、保存、生成，每个 epoch 结束和整次训练结束时也执行。意外中断只能从最近一次保存恢复，期间未保存步骤会丢失。输出目录存在且未设置 resume 时不会覆盖。
 
 ## 断点恢复
 
-训练与测速默认有进度条，相关选项在 `configs/config.yaml` 的 `progress` 中。`progress.enabled=false` 可以关闭，`progress.min_interval` 控制刷新间隔（默认 0.5 秒）。终端日志与进度条协调输出，Hydra 日志和 metrics.jsonl 仍正常保存。进度按优化步骤计算，恢复时从 checkpoint 步数开始；ETA 随实际执行时间估计，验证与保存可能使其波动。使用 stop_after 提前结束时，百分比仍相对于完整 max_steps 计划。
+训练与测速默认有进度条，相关选项在 `configs/config.yaml` 的 `progress` 中。`progress.enabled=false` 可以关闭，`progress.min_interval` 控制刷新间隔（默认 0.5 秒）。终端日志与进度条协调输出，Hydra 日志和 metrics.jsonl 仍正常保存。进度同时显示当前 epoch 和累计优化步数，恢复时从 checkpoint 对应 epoch/窗口继续；ETA 随实际执行时间估计，验证与保存可能使其波动。使用 stop_after 提前结束时，百分比仍相对于完整 max_steps 计划。
 
 ```bash
-python main.py stat=train train.resume=artifacts/gpt100m/last.pt
+python main.py stat=train train.resume=artifacts/gpt100m_epochs/last.pt
 ```
 
-必须保持模型、数据、词表、优化参数、总训练步数及精度一致，并用同一 output_dir。`max_steps` 是整次计划目标，不是在已有步骤上再加。GPU/驱动/后端变化时不保证浮点结果逐位相同。
+必须保持模型、数据、词表、优化参数、训练计划（epochs 或 max_steps）及精度一致，并用同一 output_dir。`max_steps` 是整次计划目标，不是在已有步骤上再加。GPU/驱动/后端变化时不保证浮点结果逐位相同。
 
-旧 4×4 实验的 checkpoint 恢复时需显式设置 `train.batch_size=4`，不能直接用新的 8×4 默认值续训。8×4 作为新实验时使用不同 `train.output_dir`，保留旧实验结果。
+旧 4×4、1000 步实验恢复时需显式设置 train.batch_size=4、train.max_steps=1000、train.output_dir=artifacts/gpt100m，不能直接使用新的 epoch 模式续训旧的随机窗口实验。新实验使用独立目录保留旧结果。
 
-可选的续训验证：第一次运行设置 `train.stop_after=20` 提前停下并保存，恢复时取消该限制。原始学习率计划仍由 `max_steps` 决定，不会按 stop_after 截短。
+可选的续训验证：第一次运行设置 `train.stop_after=20` 提前停下并保存，恢复时取消该限制。原始学习率计划仍由 epochs 计算出的总步数（或显式 max_steps）决定，不会按 stop_after 截短。
 
-扩大训练预算请在首次正式运行前设置 `train.max_steps`。更改已有计划需另立实验，不声称与原计划连续训练等价。
+扩大训练预算请在首次正式运行前设置 train.epochs（或兼容模式的 train.max_steps）。更改已有计划需另立实验，不声称与原计划连续训练等价。
 
 ## 评估、生成与曲线
 
@@ -105,3 +107,7 @@ python -m unittest discover -s tests -v
 核心实现：`src/model.py`、`src/token_data.py`、`src/training.py`。配置：`configs/model/gpt100m.yaml`、`configs/train/default.yaml`。
 
 当前只完成代码与本地 CPU 验证，没有在本地声称完成服务器 GPU 训练；正式效果与耗时应依据服务器结果判断。
+
+## 手动停止
+
+Ctrl+C 按 Python 默认行为直接终止，不自定义拦截、不额外保存当前步。续训从最近的 last.pt 开始，未保存的更新需要重跑。若正在保存时中断，原 last.pt 保留，未写完的临时文件不会代替它；强制断电、磁盘故障不在此保证内。

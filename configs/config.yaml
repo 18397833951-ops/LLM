@@ -4,6 +4,7 @@ defaults:
   - model: gpt100m
   - train: default
   - _self_
+  - experiment: null
 
 # 默认只检查已有数据，下载需明确指定 stat=prepare。
 stat: inspect
@@ -23,7 +24,7 @@ benchmark:
 
 eval:
   checkpoint: ${train.output_dir}/best.pt
-  max_tokens: 100000
+  max_tokens: null
 
 generate:
   checkpoint: ${eval.checkpoint}

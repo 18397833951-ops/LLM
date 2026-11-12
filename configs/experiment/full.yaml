@@ -1,0 +1,13 @@
+# @package _global_
+# 独立的全量实验，必须先准备对应数据和词表，不会混用旧实验。
+data:
+  revision: f54c09fd23315a6f9c86f9dc80f725de7d8f9c64
+  train_size: null
+  val_size: null
+  output_dir: data/tinystories_full
+tokenizer:
+  output_dir: artifacts/tokenizer_full
+train:
+  epochs: 3
+  max_steps: null
+  output_dir: artifacts/gpt100m_full

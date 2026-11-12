@@ -85,7 +85,7 @@ class GPT(nn.Module):
         if targets is not None:
             if targets.shape != ids.shape:
                 raise ValueError("targets 形状必须与输入相同，并已经右移一位")
-            loss = F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]), targets.reshape(-1))
+            loss = F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-100)
         return logits, loss
 
     def parameter_count(self):

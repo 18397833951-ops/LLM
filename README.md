@@ -1,35 +1,34 @@
 # 从零训练英文语言模型
 
-已实现数据准备、手写 BPE、约 0.1B 的手写 Transformer，以及测速、训练、续训、评估、生成和曲线导出。正式 GPU 训练尚待在服务器执行。
+已实现手写 BPE、约 0.1B 的 Transformer、epoch 训练、测速、断点恢复、评估、生成和曲线导出。小样本实验已跑通，下一轮全量实验需要先准备全量数据。
 
-## 当前步骤：在服务器测速
+## 当前训练配置
 
-你已经完成数据和分词器准备，不需要重新下载或训练词表。在服务器的 LLM 项目根目录，激活原来的环境后依次执行：
+- batch_size=8，grad_accum=4。
+- 默认训练 3 个 epoch，每遍完整覆盖当前训练数据，包括尾部。
+- 每 5000 步验证并保存，每个 epoch 结束时也验证、保存。
+- best.pt 按验证 loss 选择，last.pt 用于恢复。
+- 有进度条，显示当前 epoch、累计步数、预计剩余时间和 loss。
+- Ctrl+C 正常终止；之后从最近保存的 last.pt 恢复，未保存部分重跑。
 
-```bash
+**加 epoch 不等于已经准备好全量数据。** 若仍使用之前的 1 万篇，训练三遍依然只是在学习这 1 万篇。
+
+## 下一步：准备全量数据
+
+在本地 Windows 的 D:\LLM 目录更新代码后执行：
+
+```powershell
 git pull --ff-only
-python -m pip install -r requirements.txt
-python main.py stat=benchmark
+.\.venv\Scripts\python.exe main.py experiment=full stat=prepare
 ```
 
-模型任务需要已有 **PyTorch >= 2.4 的 CUDA 环境**，requirements.txt 不会替换你的 PyTorch。
+这次读取全部官方训练和验证 split，过滤重复后保存到 data/tinystories_full。需要本地能访问 Hugging Face；之前的小样本目录不会覆盖。完成后按 [全量训练流程](docs/full_run.md) 继续，未准备好对应数据和词表时不要直接启动全量训练。
 
-测速直接使用约 0.1B 的模型，不要求先训练小模型。默认预热 5 步，再测 20 步，报告参数量、精度、每秒 token 数、显存及训练时长估算。结果保存在 runs/benchmark/ 下对应运行目录中，测速不保存模型权重。
+## 文档
 
-当前默认 `batch_size=8、grad_accum=4`，每次参数更新处理 8192 个 token。请比较每秒 token 数判断是否更快；它不是之前 4×4 配置的等训练量替换。
+- [全量训练流程](docs/full_run.md)：按顺序完成本地准备、上传数据、服务器训练和恢复。
+- [数据准备](docs/data_usage.md)
+- [分词器](docs/tokenizer.md)
+- [模型与训练说明](docs/training.md)
 
-编码、预热、测速和训练默认显示进度条，无需额外参数。训练进度条显示步数、百分比、预计剩余时间、loss、最佳验证 loss 和吞吐；验证、生成和保存时会显示当前阶段。
-
-**先把测速输出发回来，再根据实际速度和显存确定正式训练预算。** 估算不包含首次编码、验证、生成和保存模型的时间。
-
-如果出现显存不足，保留完整报错，不要连续重试原配置。
-
-## 其他步骤说明
-
-- [数据准备](docs/data_usage.md)：已准备成功不用重跑。
-- [BPE 分词器](docs/tokenizer.md)：已有词表不用重训。
-- [模型训练](docs/training.md)：结构、正式训练、恢复、评估、生成和可选参数。
-
-这些文档按需查看，不需要逐条执行其中的示例。
-
-数据来源：[TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories)。
+各文档的可选参数不需要逐条执行。显式设置 train.max_steps 可兼容旧随机窗口实验；默认保持 null 使用 epoch 模式。

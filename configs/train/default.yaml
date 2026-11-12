@@ -3,8 +3,9 @@ precision: auto
 seed: 42
 batch_size: 8
 grad_accum: 4
-# 当前预算：1000 步约 819.2 万有效 token；修改 batch 后需重新测速。
-max_steps: 1000
+# 默认按 epoch 完整遍历；显式设置 max_steps 可使用旧的随机窗口步数模式。
+epochs: 3
+max_steps: null
 lr: 0.0003
 min_lr: 0.00003
 warmup_steps: 100
@@ -13,10 +14,10 @@ beta1: 0.9
 beta2: 0.95
 grad_clip: 1.0
 log_every: 10
-eval_every: 250
-save_every: 250
-sample_every: 250
-output_dir: artifacts/gpt100m
+eval_every: 5000
+save_every: 5000
+sample_every: 5000
+output_dir: artifacts/gpt100m_epochs
 token_cache: artifacts/tokens
 resume: null
 # 可提前停下并保存，用于续训检查；学习率计划仍按 max_steps。
