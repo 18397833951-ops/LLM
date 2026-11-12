@@ -1,0 +1,19 @@
+defaults:
+  - data: tinystories
+  - _self_
+
+# 默认只检查已有数据，下载需明确指定 stat=prepare。
+stat: inspect
+
+inspect:
+  samples: 3
+  preview_chars: 300
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: runs/${stat}/${now:%Y-%m-%d_%H-%M-%S_%f}
+  sweep:
+    dir: runs/multirun/${now:%Y-%m-%d_%H-%M-%S_%f}
+    subdir: ${hydra.job.num}

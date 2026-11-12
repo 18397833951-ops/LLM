@@ -1,0 +1,23 @@
+name: roneneldan/TinyStories
+# prepare 会将 main 解析为具体 commit，并记录在 manifest.json。
+revision: main
+subset: null
+text_field: text
+train_split: train
+val_split: validation
+
+output_dir: data/tinystories
+cache_dir: .cache/huggingface
+
+# 初次调试的数量；设为 null 表示遍历该 split 全部数据。
+train_size: 10000
+val_size: 1000
+
+seed: 42
+shuffle: true
+shuffle_buffer: 1000
+min_chars: 1
+
+# 按 Unicode NFC + 合并空白后的文本判断重复；保存文本不做这种改写。
+deduplicate: true
+remove_overlap: true
