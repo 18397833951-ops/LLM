@@ -1,9 +1,9 @@
 device: cuda
 precision: auto
 seed: 42
-batch_size: 4
+batch_size: 8
 grad_accum: 4
-# 首轮训练预算，1000 步约 409.6 万有效 token；后续根据测速扩大。
+# 当前预算：1000 步约 819.2 万有效 token；修改 batch 后需重新测速。
 max_steps: 1000
 lr: 0.0003
 min_lr: 0.00003
