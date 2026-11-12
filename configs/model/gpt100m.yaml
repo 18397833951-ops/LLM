@@ -1,0 +1,6 @@
+layers: 14
+width: 768
+heads: 12
+context: 256
+dropout: 0.1
+ffn_mult: 4

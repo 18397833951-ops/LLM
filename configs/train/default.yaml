@@ -1,0 +1,23 @@
+device: cuda
+precision: auto
+seed: 42
+batch_size: 4
+grad_accum: 4
+# 首轮训练预算，1000 步约 409.6 万有效 token；后续根据测速扩大。
+max_steps: 1000
+lr: 0.0003
+min_lr: 0.00003
+warmup_steps: 100
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+log_every: 10
+eval_every: 250
+save_every: 250
+sample_every: 250
+output_dir: artifacts/gpt100m
+token_cache: artifacts/tokens
+resume: null
+# 可提前停下并保存，用于续训检查；学习率计划仍按 max_steps。
+stop_after: null

@@ -1,6 +1,8 @@
 defaults:
   - data: tinystories
   - tokenizer: bpe
+  - model: gpt100m
+  - train: default
   - _self_
 
 # 默认只检查已有数据，下载需明确指定 stat=prepare。
@@ -9,6 +11,23 @@ stat: inspect
 inspect:
   samples: 3
   preview_chars: 300
+
+benchmark:
+  warmup_steps: 5
+  steps: 20
+  estimate_tokens: 100000000
+
+eval:
+  checkpoint: ${train.output_dir}/best.pt
+  max_tokens: 100000
+
+generate:
+  checkpoint: ${eval.checkpoint}
+  prompt: "Once upon a time, there was a little cat."
+  max_new_tokens: 128
+  temperature: 0.8
+  top_k: 50
+  seed: 123
 
 hydra:
   job:
