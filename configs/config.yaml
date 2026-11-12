@@ -8,6 +8,10 @@ defaults:
 # 默认只检查已有数据，下载需明确指定 stat=prepare。
 stat: inspect
 
+progress:
+  enabled: true
+  min_interval: 0.5
+
 inspect:
   samples: 3
   preview_chars: 300

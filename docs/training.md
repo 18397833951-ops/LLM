@@ -62,6 +62,8 @@ python main.py stat=train
 
 ## 断点恢复
 
+训练与测速默认有进度条，相关选项在 `configs/config.yaml` 的 `progress` 中。`progress.enabled=false` 可以关闭，`progress.min_interval` 控制刷新间隔（默认 0.5 秒）。终端日志与进度条协调输出，Hydra 日志和 metrics.jsonl 仍正常保存。进度按优化步骤计算，恢复时从 checkpoint 步数开始；ETA 随实际执行时间估计，验证与保存可能使其波动。使用 stop_after 提前结束时，百分比仍相对于完整 max_steps 计划。
+
 ```bash
 python main.py stat=train train.resume=artifacts/gpt100m/last.pt
 ```

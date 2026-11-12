@@ -9,9 +9,11 @@ from pathlib import Path
 import time
 
 import torch
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from src.data import file_hash, write_json
 from src.model import GPT
+from src.progress import progress_bar
 from src.token_data import TokenStream, prepare_tokens
 from src.tokenizer import BPETokenizer
 
@@ -210,16 +212,19 @@ def benchmark_or_train(cfg, task, run_dir):
         bench = cfg["benchmark"]
         if any(type(bench[key]) is not int or bench[key] < minimum for key, minimum in (("warmup_steps", 0), ("steps", 1), ("estimate_tokens", 1))):
             raise ValueError("benchmark 步数与 token 预算无效")
-        for _ in range(bench["warmup_steps"]):
+        for _ in progress_bar(range(bench["warmup_steps"]), config=cfg.get("progress"), desc="Warmup", unit="step"):
             update(model, streams["train"], optimizer, scaler, rng, train, device, precision)
         synchronize(device)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
-        started = time.perf_counter()
-        for _ in range(bench["steps"]):
-            loss = update(model, streams["train"], optimizer, scaler, rng, train, device, precision)
-        synchronize(device)
-        elapsed = time.perf_counter() - started
+        with progress_bar(total=bench["steps"], config=cfg.get("progress"), desc="Benchmark", unit="step") as progress:
+            started = time.perf_counter()
+            for _ in range(bench["steps"]):
+                loss = update(model, streams["train"], optimizer, scaler, rng, train, device, precision)
+                progress.set_postfix(loss=f"{loss:.4f}", refresh=False)
+                progress.update(1)
+            synchronize(device)
+            elapsed = time.perf_counter() - started
         speed = bench["steps"] * tokens_per_step / elapsed
         result = {"parameters": model.parameter_count(), "model_config": model_cfg,
                   "device": str(device), "precision": precision, "torch_version": str(torch.__version__),
@@ -247,39 +252,49 @@ def benchmark_or_train(cfg, task, run_dir):
     if start_step >= end_step:
         raise ValueError("checkpoint 已达到本次目标步数，请检查 stop_after/max_steps")
     if not start_step:
+        logging.info("正在进行初始验证和生成样例")
         initial = evaluate(model, streams["val"], train["batch_size"], device, precision, cfg["eval"]["max_tokens"])
         append_json(output / "metrics.jsonl", {"step": 0, "val_loss": initial["loss"], "val_tokens": initial["tokens"]})
         append_json(output / "samples.jsonl", {"step": 0, **generate(model, tokenizer, cfg["generate"], device, precision)})
     measured_tokens = measured_seconds = 0
-    for step in range(start_step, end_step):
-        lr = learning_rate(step, train)
-        for group in optimizer.param_groups:
-            group["lr"] = lr
-        synchronize(device)
-        started = time.perf_counter()
-        loss = update(model, streams["train"], optimizer, scaler, rng, train, device, precision)
-        synchronize(device)
-        elapsed = time.perf_counter() - started
-        measured_tokens += tokens_per_step
-        measured_seconds += elapsed
-        completed = step + 1
-        record = {"step": completed, "seen_tokens": completed * tokens_per_step,
-                  "train_loss": loss, "lr": lr, "tokens_per_second": tokens_per_step / elapsed}
-        is_best = False
-        if completed % train["eval_every"] == 0 or completed == end_step:
-            evaluation = evaluate(model, streams["val"], train["batch_size"], device, precision, cfg["eval"]["max_tokens"])
-            record.update(val_loss=evaluation["loss"], val_tokens=evaluation["tokens"])
-            is_best = evaluation["loss"] < best
-            best = min(best, evaluation["loss"])
-        append_json(output / "metrics.jsonl", record)
-        if completed % train["log_every"] == 0 or completed == end_step:
-            logging.info("step %s/%s loss %.4f val %s tokens/s %.0f", completed, train["max_steps"], loss, record.get("val_loss"), measured_tokens/measured_seconds)
-        if completed % train["sample_every"] == 0 or completed == end_step:
-            append_json(output / "samples.jsonl", {"step": completed, **generate(model, tokenizer, cfg["generate"], device, precision)})
-        if completed % train["save_every"] == 0 or completed == end_step or is_best:
-            save_checkpoint(output / "last.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision)
-        if is_best:
-            save_checkpoint(output / "best.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision)
+    with logging_redirect_tqdm(), progress_bar(total=train["max_steps"], initial=start_step,
+                                               config=cfg.get("progress"), desc="Train", unit="step") as progress:
+        for step in range(start_step, end_step):
+            lr = learning_rate(step, train)
+            for group in optimizer.param_groups:
+                group["lr"] = lr
+            synchronize(device)
+            started = time.perf_counter()
+            loss = update(model, streams["train"], optimizer, scaler, rng, train, device, precision)
+            synchronize(device)
+            elapsed = time.perf_counter() - started
+            measured_tokens += tokens_per_step
+            measured_seconds += elapsed
+            completed = step + 1
+            record = {"step": completed, "seen_tokens": completed * tokens_per_step,
+                      "train_loss": loss, "lr": lr, "tokens_per_second": tokens_per_step / elapsed}
+            is_best = False
+            if completed % train["eval_every"] == 0 or completed == end_step:
+                progress.set_description("Train / validation")
+                evaluation = evaluate(model, streams["val"], train["batch_size"], device, precision, cfg["eval"]["max_tokens"])
+                record.update(val_loss=evaluation["loss"], val_tokens=evaluation["tokens"])
+                is_best = evaluation["loss"] < best
+                best = min(best, evaluation["loss"])
+            append_json(output / "metrics.jsonl", record)
+            if completed % train["log_every"] == 0 or completed == end_step:
+                logging.info("step %s/%s loss %.4f val %s tokens/s %.0f", completed, train["max_steps"], loss, record.get("val_loss"), measured_tokens/measured_seconds)
+            if completed % train["sample_every"] == 0 or completed == end_step:
+                progress.set_description("Train / sampling")
+                append_json(output / "samples.jsonl", {"step": completed, **generate(model, tokenizer, cfg["generate"], device, precision)})
+            if completed % train["save_every"] == 0 or completed == end_step or is_best:
+                progress.set_description("Train / saving")
+                save_checkpoint(output / "last.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision)
+            if is_best:
+                save_checkpoint(output / "best.pt", model, optimizer, scaler, rng, completed, best, model_cfg, cfg, meta, precision)
+            progress.set_description("Train", refresh=False)
+            progress.set_postfix(loss=f"{loss:.4f}", best_val=f"{best:.4f}" if math.isfinite(best) else "--",
+                                 tok_s=f"{measured_tokens/measured_seconds:.0f}", refresh=False)
+            progress.update(1)
     return {"output_dir": str(output), "step": end_step, "seen_tokens": end_step*tokens_per_step,
             "best_val_loss": best, "parameters": model.parameter_count(), "completed_plan": end_step == train["max_steps"]}
 

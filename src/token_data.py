@@ -12,6 +12,7 @@ import torch
 from src.data import file_hash, write_json
 from src.tokenizer import BPETokenizer
 from src.tokenizer_tasks import data_manifest, read_texts, verify_split
+from src.progress import progress_bar
 
 
 def prepare_tokens(cfg):
@@ -45,7 +46,9 @@ def prepare_tokens(cfg):
             count = documents = 0
             path = staging / f"{split}.bin"
             with path.open("wb") as stream:
-                for text in read_texts(paths[split]):
+                for text in progress_bar(read_texts(paths[split]), config=cfg.get("progress"),
+                                         total=manifest["splits"][split].get("saved"),
+                                         desc=f"Encode {split}", unit="story"):
                     ids = tokenizer.encode(text, add_eos=True)
                     stream.write(np.asarray(ids, dtype=dtype).tobytes())
                     count += len(ids)

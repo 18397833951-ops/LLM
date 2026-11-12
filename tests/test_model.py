@@ -106,6 +106,7 @@ class TrainingTests(unittest.TestCase):
                 "benchmark.warmup_steps=1", "benchmark.steps=2",
             ])
         self.cfg = OmegaConf.to_container(cfg, resolve=True)
+        self.cfg["progress"]["enabled"] = False
         self.cfg["data"]["output_dir"] = str(data)
         self.cfg["tokenizer"]["output_dir"] = str(token_dir)
         self.cfg["train"]["token_cache"] = str(self.root / "tokens")
