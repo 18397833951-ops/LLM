@@ -29,6 +29,7 @@ class DemoService:
     def model_paths(self):
         root = Path(self.cfg["alignment"]["output_dir"])
         return dict(base=Path(self.cfg["alignment"]["checkpoint"]),
+                    chat=Path(self.cfg["chat"]["output_dir"]) / "sft" / "final.pt",
                     **{name: root / name / "final.pt" for name in ("sft", "dpo", "rlvr")})
 
     def assets(self):
@@ -71,6 +72,7 @@ class DemoService:
         science = read_json(science_root / "report.json")
         plan = read_json(science_root / "plan.json")
         alignment = read_json(Path(self.cfg["alignment"]["output_dir"]) / "report.json")
+        chat = read_json(Path(self.cfg["chat"]["output_dir"]) / "report.json")
         identical = None
         if plan:
             files = plan.get("tokens", {}).get("files", {})
@@ -86,6 +88,8 @@ class DemoService:
                                    samples={r["model"]: r["samples"][:5] for r in alignment["evaluation"]},
                                    limitations=alignment["limitations"]) if alignment else None,
                     models={name:path.is_file() for name,path in self.model_paths().items()},
+                    chat=dict(evaluation=[{k:v for k,v in r.items() if k != "samples"} for r in chat["evaluation"]],
+                              limitations=chat["limitations"]) if chat else None,
                     assets=[name for name,path in self.assets().items() if path.is_file()],
                     scope="第 1–4 部分；单卡实验。第 5 部分 Agent 未做，多卡与真实网页清洗实证未覆盖。")
 
@@ -99,13 +103,16 @@ class DemoService:
         from src.alignment_tasks import model_from_checkpoint, sample_responses
         from src.tokenizer import BPETokenizer
         from src.training import generate, setup
+        from src.chat_tasks import fit_history, chat_reply
 
         name = payload.get("model", "base")
         mode = payload.get("mode", "continuation")
         max_tokens = payload.get("max_new_tokens", 144)
         seed = payload.get("seed", 123)
-        if name not in self.model_paths() or mode not in ("continuation", "instruction"):
+        if name not in self.model_paths() or mode not in ("continuation", "instruction", "chat"):
             raise ValueError("未知模型或生成模式")
+        if (mode == "chat") != (name == "chat"):
+            raise ValueError("英文聊天模式请选择英文问候模型；故事实验请选择故事模型")
         if type(max_tokens) is not int or not 1 <= max_tokens <= 256 or type(seed) is not int or not 0 <= seed < 2 ** 31:
             raise ValueError("生成长度需为 1–256，种子需为非负整数")
         words = payload.get("words", [])
@@ -116,17 +123,22 @@ class DemoService:
             if words[0] == words[1]:
                 raise ValueError("两个关键词需要不同")
             prompt = task_prompt(words)
+        elif mode == "chat":
+            prompt = payload.get("prompt", "")
+            if not isinstance(prompt, str) or not prompt.strip() or not prompt.isascii() or len(prompt) > 1200:
+                raise ValueError("请输入简短的英文消息")
         else:
             prompt = payload.get("prompt", "")
             if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 1200 or not prompt.isascii():
                 raise ValueError("请输入 1–1200 字符的英文故事开头")
         path = self.model_paths()[name]
         if not path.is_file():
-            raise ValueError("未找到预训练权重，请检查 alignment.checkpoint" if name == "base" else "未找到微调权重，请检查结果目录或先运行 stat=align")
+            raise ValueError("英文问候权重尚未准备，请先运行 stat=chat" if name == "chat" else
+                             "未找到预训练权重，请检查 alignment.checkpoint" if name == "base" else "未找到微调权重，请检查结果目录或先运行 stat=align")
         with self.lock:
             options = copy.deepcopy(self.cfg)
             device, precision = setup(options)
-            tokenizer_path = Path(self.cfg["alignment"]["tokenizer_dir"]) / "tokenizer.json"
+            tokenizer_path = Path(self.cfg["chat" if name == "chat" else "alignment"]["tokenizer_dir"]) / "tokenizer.json"
             stamp = (str(path.resolve()), path.stat().st_mtime_ns, tokenizer_path.stat().st_mtime_ns)
             if self.active_stamp != stamp:
                 self.model = None
@@ -139,7 +151,13 @@ class DemoService:
                 self.model = model_from_checkpoint(path, self.tokenizer, device).eval()
                 self.active_stamp, self.active_name = stamp, name
             began = time.perf_counter()
-            if mode == "instruction":
+            if mode == "chat":
+                length = min(max_tokens, self.cfg["chat"]["max_new_tokens"])
+                prompt, history_turns = fit_history(self.tokenizer["instance"], self.model.context,
+                                                   payload.get("history", []), prompt, length)
+                result = chat_reply(self.model, self.tokenizer["instance"], prompt, length, device, precision)
+                result["history_turns_used"] = history_turns
+            elif mode == "instruction":
                 length = min(max_tokens, self.model.context - len(self.tokenizer["instance"].encode(prompt)) + 1)
                 rng = torch.Generator(device=device).manual_seed(seed)
                 ids = sample_responses(self.model, self.tokenizer["instance"], prompt, 1, length, rng, device, precision)[0]

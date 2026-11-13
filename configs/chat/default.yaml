@@ -1,0 +1,13 @@
+checkpoint: artifacts/gpt100m_full/best.pt
+tokenizer_dir: artifacts/tokenizer_full
+dataset: resources/english_dialogue.json
+output_dir: artifacts/chat
+seed: 42
+batch_size: 4
+grad_accum: 2
+max_prompt_tokens: 160
+max_new_tokens: 80
+eval_every: 100
+save_every: 100
+stop_after: null
+sft: {steps: 500, lr: 0.00003, min_lr: 0.000003, warmup_steps: 25}

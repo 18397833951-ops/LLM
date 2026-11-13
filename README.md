@@ -43,6 +43,8 @@ python main.py stat=web
 
 ## 当前训练配置
 
+英文问候是可选的独立微调分支：`python main.py stat=chat`。自动准备项目内小型合成对话数据、复用原权重做 SFT，再保存真实测试回复。完成后页面可选“英文问候 SFT”，保留有限的最近聊天上下文；不保证通用聊天能力。见 [英文问候说明](docs/chat.md)。
+
 - batch_size=8，grad_accum=4。
 - 默认训练 3 个 epoch，每遍完整覆盖当前训练数据，包括尾部。
 - 每 5000 步验证并保存，每个 epoch 结束时也验证、保存。
@@ -70,6 +72,7 @@ git pull --ff-only
 - [清洗与 Scaling Law](docs/science.md)
 - [SFT / DPO / RLVR](docs/alignment.md)
 - [演示页面](docs/demo.md)
+- [英文问候扩展](docs/chat.md)
 - [数据准备](docs/data_usage.md)
 - [分词器](docs/tokenizer.md)
 - [模型与训练说明](docs/training.md)

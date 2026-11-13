@@ -34,13 +34,16 @@ def main(cfg: DictConfig):
     elif cfg.stat == "report":
         from src.report_tasks import export_report
         result = export_report(config)
+    elif cfg.stat in ("chat", "chat_prepare", "chat_eval"):
+        from src.chat_tasks import run_chat
+        result = run_chat(config, cfg.stat)
     elif cfg.stat in ("benchmark", "train", "eval", "generate", "plot"):
         # 延迟导入，数据与分词器任务不要求安装 PyTorch。
         from hydra.core.hydra_config import HydraConfig
         from src.training import run_task
         result = run_task(config, cfg.stat, HydraConfig.get().runtime.output_dir)
     else:
-        raise ValueError(f"未知任务 stat={cfg.stat}，支持 prepare、inspect、tokenizer、tokenizer_check、benchmark、train、eval、generate、plot、attention、science、science_prepare、science_analyze、align、align_prepare、align_eval、web、report")
+        raise ValueError(f"未知任务 stat={cfg.stat}，支持 prepare、inspect、tokenizer、tokenizer_check、benchmark、train、eval、generate、plot、attention、science、science_prepare、science_analyze、align、align_prepare、align_eval、web、report、chat、chat_prepare、chat_eval")
 
     logging.info("\n%s", json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("issues"):

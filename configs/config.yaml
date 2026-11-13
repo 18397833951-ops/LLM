@@ -6,6 +6,7 @@ defaults:
   - attention: default
   - science: default
   - alignment: default
+  - chat: default
   - web: default
   - _self_
   - experiment: null

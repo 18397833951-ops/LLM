@@ -68,6 +68,12 @@ def export_report(cfg):
                 lines += [f"**{name}; required words: {', '.join(sample['words'])}**", "", sample["text"], ""]
     else:
         lines.append("Post-training has not produced a complete evaluation report yet. No success rate is claimed.")
+    if state.get("chat"):
+        lines += ["", "### Optional English greeting extension", "",
+                  "A separate SFT checkpoint is trained on project-authored synthetic greeting and small-talk templates. It does not overwrite the story checkpoints or replace the SFT/DPO/RLVR comparison. Full train/dev/test prompts are checked disjoint, but the same intent categories are shared across splits. Replies use actual model inference, not a lookup table. History is limited by the small context window.", ""]
+        for row in state["chat"]["evaluation"]:
+            lines.append(f"{row['model']}: held-out response loss {metric(row['test_loss'])}; empty reply rate {metric(row['empty_response_rate'])}; name-context matching proxy {metric(row['context_name_match_rate'])}.")
+        lines += ["", "Only two held-out names are used for the context-name proxy. No overall conversational accuracy or general instruction competence is claimed; generated samples require manual review."]
     lines += ["", "## 6. Limitations and completion scope", "",
               "This submission covers parts 1–4 at the documented scale. Long-horizon Agent training and the self-judge module are omitted. Multi-GPU measurements and a real raw-web cleaning comparison are not included. Post-training is a narrow story constraint task, not general instruction alignment. Only one post-training training seed and a small test set are used; improvements must be judged from actual outputs and cannot be assumed.", "",
               "## 7. Reproduction and demonstration", "", "```bash", "python main.py experiment=full stat=train", "python main.py stat=attention attention=train", "python main.py stat=science", "python main.py stat=align", "python main.py stat=web", "```", "",
