@@ -1,0 +1,21 @@
+# 一次完成所有配置的前向正确性检查、测速和绘图；不训练模型。
+device: cuda:0
+seed: 42
+batch_sizes: [1, 4]
+heads: 12
+head_dim: 64
+lengths: [256, 512, 1024, 2048, 4096]
+dtypes: [float16, bfloat16]
+causal: true
+block_m: 64
+block_n: 64
+num_warps: 4
+warmup_ms: 25
+repeat_ms: 100
+# 小尺寸额外覆盖单 token、非整块尾部与 128 维 head。
+edge_lengths: [1, 63, 65, 129]
+edge_head_dims: [64, 128]
+tolerance:
+  float16: {atol: 0.002, rtol: 0.01}
+  bfloat16: {atol: 0.02, rtol: 0.05}
+output_dir: artifacts/attention

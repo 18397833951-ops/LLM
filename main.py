@@ -19,13 +19,16 @@ def main(cfg: DictConfig):
         result = train_tokenizer(config["data"], config["tokenizer"])
     elif cfg.stat == "tokenizer_check":
         result = check_tokenizer(config["data"], config["tokenizer"])
+    elif cfg.stat == "attention":
+        from src.attention_tasks import run_attention
+        result = run_attention(config["attention"], config["progress"])
     elif cfg.stat in ("benchmark", "train", "eval", "generate", "plot"):
         # 延迟导入，数据与分词器任务不要求安装 PyTorch。
         from hydra.core.hydra_config import HydraConfig
         from src.training import run_task
         result = run_task(config, cfg.stat, HydraConfig.get().runtime.output_dir)
     else:
-        raise ValueError(f"未知任务 stat={cfg.stat}，支持 prepare、inspect、tokenizer、tokenizer_check、benchmark、train、eval、generate、plot")
+        raise ValueError(f"未知任务 stat={cfg.stat}，支持 prepare、inspect、tokenizer、tokenizer_check、benchmark、train、eval、generate、plot、attention")
 
     logging.info("\n%s", json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("issues"):

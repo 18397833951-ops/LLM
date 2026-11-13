@@ -1,0 +1,3 @@
+# 服务器现有 PyTorch 2.8 对应 Triton 3.4；不安装/替换 PyTorch。
+-r requirements.txt
+triton==3.4.0; sys_platform == "linux" and platform_machine == "x86_64"

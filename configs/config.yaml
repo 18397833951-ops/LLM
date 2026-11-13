@@ -3,6 +3,7 @@ defaults:
   - tokenizer: bpe
   - model: gpt100m
   - train: default
+  - attention: default
   - _self_
   - experiment: null
 

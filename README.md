@@ -1,6 +1,17 @@
 # 从零训练英文语言模型
 
-已实现手写 BPE、约 0.1B 的 Transformer、epoch 训练、测速、断点恢复、评估、生成和曲线导出。小样本实验已跑通，下一轮全量实验需要先准备全量数据。
+已实现手写 BPE、约 0.1B 的 Transformer、epoch 训练、测速、断点恢复、评估、生成和曲线导出。全量训练已在服务器完成：3 个 epoch，最佳验证 loss 0.8385，困惑度 2.313。
+
+## 当前阶段：Triton Attention
+
+在服务器现有 CUDA 环境更新代码后，一次跑完前向正确性检查、全部规模测速和绘图：
+
+```bash
+python -m pip install -r requirements-attention.txt
+python main.py stat=attention
+```
+
+结果保存到 `artifacts/attention/`。无需数据集或模型权重，不重新训练语言模型。实现和测量范围见 [Attention 实验说明](docs/attention.md)；GPU 数值及性能待服务器运行确认。
 
 ## 当前训练配置
 
@@ -13,7 +24,7 @@
 
 **加 epoch 不等于已经准备好全量数据。** 若仍使用之前的 1 万篇，训练三遍依然只是在学习这 1 万篇。
 
-## 下一步：准备全量数据
+## 首次复现：准备全量数据
 
 在本地 Windows 的 D:\LLM 目录更新代码后执行：
 
@@ -27,6 +38,7 @@ git pull --ff-only
 ## 文档
 
 - [全量训练流程](docs/full_run.md)：按顺序完成本地准备、上传数据、服务器训练和恢复。
+- [Attention 实验](docs/attention.md)
 - [数据准备](docs/data_usage.md)
 - [分词器](docs/tokenizer.md)
 - [模型与训练说明](docs/training.md)
