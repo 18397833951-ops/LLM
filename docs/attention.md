@@ -1,5 +1,7 @@
 # 手写 Triton Attention 前向实验
 
+本文记录已完成的单卡前向实验。新增反向实现、梯度检查和训练路径测速见 [Attention 训练路径实验](attention_training.md)。
+
 本阶段实现 `softmax(QKᵀ / sqrt(d) + causal_mask) V`，输入为连续的 `[B,H,N,D]` FP16/BF16 张量。支持 D=32/64/128、任意正整数 N（含非整块尾部）、因果或非因果模式。实现位于 `src/attention_kernel.py`，使用 64×64 分块、FP32 累加及 online softmax；不保存完整的 N×N 分数矩阵。
 
 ## 服务器运行
@@ -26,7 +28,7 @@ PyTorch 2.8 Linux CUDA 安装通常已有匹配的 Triton 3.4。独立依赖文�
 
 - `pytorch_naive`：直接计算完整分数矩阵，FP32 softmax 后转回输入精度，与第一部分模型的计算方式相同，无 dropout。
 - `pytorch_flash_sdpa`：强制 `SDPBackend.FLASH_ATTENTION`，不允许回退到 math。环境不支持时任务明确报错。
-- `triton`：本项目的手写分块前向 kernel。接口拒绝带梯度的训练使用，避免无声丢失梯度。
+- `triton`：本项目的手写分块 kernel。本命令只测前向；带梯度使用时会调用新增的一阶反向实现。
 
 正确性容限为 `abs(actual-reference) <= atol + rtol*abs(reference)`，FP16 默认 atol=0.002/rtol=0.01，BF16 为 0.02/0.05；同时记录最大绝对误差和 RMS 误差，不声称两种精度均达到 1e-3。
 
@@ -44,6 +46,6 @@ PyTorch 2.8 Linux CUDA 安装通常已有匹配的 Triton 3.4。独立依赖文�
 
 分块消除了完整分数矩阵带来的二次中间存储，但精确 Attention 的计算量仍随 N² 增长，不能宣称耗时必然线性。与高度优化的 Flash SDPA 相比，手写实现可能更慢，应如实报告。
 
-目前交付单卡 **前向** 算子及实验流水线。本机是 Windows CPU 环境，CPU 基准/配置/绘图可检查，GPU JIT、数值和性能必须由服务器实际运行确认。没有实现反向传播、dropout、KV cache、模型接入或多卡性能实测；原作业完整的多卡训练/推理部分仍需补充。本实验不修改已经训练的模型，也不需要再次全量训练。
+此命令交付单卡 **前向** 实验流水线，已在服务器完成 108 项比较和 60 行测速。新增反向代码和自动检查已加入独立 train 配置，GPU 结果待服务器确认。没有实现 dropout、KV cache、语言模型接入或多卡性能实测；原作业完整的多卡部分仍需补充。本实验不修改已经训练的模型，也不需要再次全量训练。
 
 算法参考 [Triton Fused Attention 教程](https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html)，接口与计时参考 [PyTorch 2.8 SDPA](https://docs.pytorch.org/docs/2.8/generated/torch.nn.functional.scaled_dot_product_attention.html)、[SDPA 后端选择](https://docs.pytorch.org/docs/2.8/generated/torch.nn.attention.sdpa_kernel.html) 与 [Triton do_bench](https://triton-lang.org/main/python-api/generated/triton.testing.do_bench.html)。本项目采用普通指针和固定分块，未使用教程的 TMA、autotune 或反向实现。

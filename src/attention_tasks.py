@@ -1,4 +1,4 @@
-"""一条命令执行前向 Attention 检查、测速和结果导出。"""
+"""一条命令执行 Attention 前向/梯度检查、测速和结果导出。"""
 
 import csv
 from datetime import datetime, timezone
@@ -13,11 +13,13 @@ import torch
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from src.attention_reference import error_metrics, naive_attention, reference_attention
+from src.attention_reference import error_metrics, naive_attention, reference_attention, reference_gradients
 from src.progress import progress_bar
 
 
 def validate_config(cfg):
+    if cfg["mode"] not in ("forward", "forward_backward"):
+        raise ValueError("attention.mode 只支持 forward/forward_backward")
     for key in ("batch_sizes", "lengths", "edge_lengths", "edge_head_dims"):
         values = cfg[key]
         if not values or any(type(n) is not int or n < 1 for n in values):
@@ -39,10 +41,11 @@ def validate_config(cfg):
         raise ValueError("block_m/block_n 只支持 32、64、128")
     if cfg["num_warps"] not in (4, 8):
         raise ValueError("num_warps 只支持 4、8")
-    for dtype in cfg["dtypes"]:
-        tolerance = cfg["tolerance"][dtype]
-        if any(not 0 < float(tolerance[key]) < 1 for key in ("atol", "rtol")):
-            raise ValueError("误差容限必须在 (0, 1) 之间")
+    for field in ("tolerance", "gradient_tolerance"):
+        for dtype in cfg["dtypes"]:
+            tolerance = cfg[field][dtype]
+            if any(not 0 < float(tolerance[key]) < 1 for key in ("atol", "rtol")):
+                raise ValueError("误差容限必须在 (0, 1) 之间")
 
 
 def make_cases(cfg):
@@ -75,12 +78,31 @@ def check_case(case, cfg, device, seed, triton_attention):
     oracle = reference_attention(q, k, v, case["causal"])
     tolerance = cfg["tolerance"][case["dtype"]]
     checks = []
-    for name, function in implementations(q, k, v, cfg, triton_attention).items():
-        output = function()
-        checks.append(dict(case, implementation=name,
-                           **error_metrics(output, oracle, **tolerance)))
-        del output
+    with torch.no_grad():
+        for name, function in implementations(q, k, v, cfg, triton_attention).items():
+            output = function()
+            checks.append(dict(case, implementation=name, component="output",
+                               **error_metrics(output, oracle, **tolerance)))
+            del output
+    del oracle
+    if cfg["mode"] == "forward_backward":
+        generator = torch.Generator(device=device).manual_seed(seed + 100000)
+        upstream = torch.randn(q.shape, dtype=q.dtype, device=device, generator=generator)
+        expected = reference_gradients(q, k, v, upstream, case["causal"])
+        tolerance = cfg["gradient_tolerance"][case["dtype"]]
+        with torch.enable_grad():
+            inputs = tuple(t.detach().requires_grad_(True) for t in (q, k, v))
+            for name, function in implementations(*inputs, cfg, triton_attention).items():
+                values = torch.autograd.grad(function(), inputs, upstream)
+                for component, actual, reference in zip(("dQ", "dK", "dV"), values, expected):
+                    checks.append(dict(case, implementation=name, component=component,
+                                       **error_metrics(actual, reference, **tolerance)))
     return checks
+
+
+def forward_backward(function, inputs, upstream):
+    # autograd.grad 每次建立/释放新图，不累积 leaf.grad，不保留旧图。
+    return torch.autograd.grad(function(), inputs, upstream)
 
 
 def measure(function, device, cfg, do_bench):
@@ -120,13 +142,13 @@ def plot_results(rows, root):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    groups = sorted({(r["dtype"], r["batch"], r["heads"], r["head_dim"], r["causal"])
+    groups = sorted({(r["dtype"], r["batch"], r["heads"], r["head_dim"], r["causal"], r.get("phase", "forward"))
                      for r in rows})
     paths = []
-    for dtype, batch, heads, dim, causal in groups:
+    for dtype, batch, heads, dim, causal, phase in groups:
         selected = [r for r in rows if (r["dtype"], r["batch"], r["heads"],
-                                       r["head_dim"], r["causal"]) ==
-                    (dtype, batch, heads, dim, causal) and r["status"] == "ok"]
+                                       r["head_dim"], r["causal"], r.get("phase", "forward")) ==
+                    (dtype, batch, heads, dim, causal, phase) and r["status"] == "ok"]
         fig, axes = plt.subplots(1, 3, figsize=(15, 4.3))
         for implementation in ("pytorch_naive", "pytorch_flash_sdpa", "triton"):
             points = sorted((r for r in selected if r["implementation"] == implementation),
@@ -137,15 +159,17 @@ def plot_results(rows, root):
             axes[0].plot(lengths, [r["latency_ms"] for r in points], "o-", label=implementation)
             axes[1].plot(lengths, [r["extra_peak_mib"] for r in points], "o-", label=implementation)
             axes[2].plot(lengths, [r["speedup_vs_naive"] for r in points], "o-", label=implementation)
-        for ax, title, ylabel in zip(axes, ["Forward latency", "Extra peak allocated memory", "Speedup over naive"],
+        title = "Forward + backward latency" if phase == "forward_backward" else "Forward latency"
+        for ax, title, ylabel in zip(axes, [title, "Extra peak allocated memory", "Speedup over naive"],
                                      ["Milliseconds", "MiB", "Times"]):
             ax.set(title=title, xlabel="Sequence length", ylabel=ylabel)
             ax.grid(alpha=0.25)
         axes[0].set_yscale("log")
         axes[0].legend(fontsize=8)
-        fig.suptitle(f"{dtype} | B={batch}, H={heads}, D={dim} | causal={causal} | forward only")
+        fig.suptitle(f"{dtype} | B={batch}, H={heads}, D={dim} | causal={causal} | {phase}")
         fig.tight_layout()
-        path = root / f"attention_{dtype}_b{batch}.png"
+        suffix = "_forward_backward" if phase == "forward_backward" else ""
+        path = root / f"attention_{dtype}_b{batch}{suffix}.png"
         fig.savefig(path, dpi=160)
         plt.close(fig)
         paths.append(str(path))
@@ -183,7 +207,9 @@ def run_attention(cfg, progress_cfg):
             "gpu": torch.cuda.get_device_name(device), "device": str(device),
             "compute_capability": list(torch.cuda.get_device_capability(device)),
         }, "checks": [], "benchmarks": [], "plots": [], "issues": [],
-        "notes": ["单卡前向实验，无 dropout，不支持反向传播，未接入语言模型训练。",
+        "notes": ["单卡 Attention 算子实验，无 dropout，支持一阶反向，未接入语言模型训练。",
+                  "forward_backward 包含建图前向及 dQ/dK/dV，不含 loss、优化器或完整 Transformer。",
+                  "反向重算分块概率，保存线性大小的 LSE 和输入输出，不保存 N×N 矩阵。",
                   "SDPA 强制 FLASH_ATTENTION 后端，不允许静默回退 math。",
                   "latency_ms 是预热后 CUDA event 计时中位数，不包含编译或正确性检查。",
                   "extra_peak_mib 是单次调用新增的 PyTorch allocated 峰值，包含输出，不包含输入、allocator reserved 或其他进程。",
@@ -196,7 +222,7 @@ def run_attention(cfg, progress_cfg):
         torch.backends.cuda.matmul.allow_tf32 = False
         save_report(root, report)
         # 强制 Flash backend：不把 math SDPA 的成绩误报成 FlashAttention。
-        with torch.cuda.device(device), torch.no_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        with torch.cuda.device(device), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             bar = progress_bar(edge_cases + cases, config=progress_cfg, desc="Attention check", unit="case")
             with bar:
                 for index, case in enumerate(bar):
@@ -207,21 +233,29 @@ def run_attention(cfg, progress_cfg):
                     if failures:
                         report["issues"].append(f"正确性检查失败：{failures}")
                         raise ValueError("Attention 误差超出容限，已停止测速；查看 results.json")
-            logging.info("前向正确性检查全部通过，开始 %d 个配置 × 3 种实现测速", len(cases))
+            logging.info("%s 正确性检查全部通过，开始 %d 个配置 × 3 种实现测速", cfg["mode"], len(cases))
             bar = progress_bar(cases, config=progress_cfg, desc="Attention benchmark", unit="case")
             with bar:
                 for index, case in enumerate(bar):
                     q, k, v = make_inputs(case, device, cfg["seed"] + len(edge_cases) + index)
-                    baseline_ms = None
-                    for name, function in implementations(q, k, v, cfg, triton_attention).items():
-                        row = dict(case, implementation=name, status="ok")
-                        row.update(measure(function, device, cfg, do_bench))
-                        if name == "pytorch_naive":
-                            baseline_ms = row["latency_ms"]
-                        row["speedup_vs_naive"] = baseline_ms / row["latency_ms"]
-                        report["benchmarks"].append(row)
+                    phases = ["forward"] if cfg["mode"] == "forward" else ["forward", "forward_backward"]
+                    upstream = torch.ones_like(q)
+                    for phase in phases:
+                        training = phase == "forward_backward"
+                        inputs = tuple(t.detach().requires_grad_(training) for t in (q, k, v))
+                        baseline_ms = None
+                        with torch.set_grad_enabled(training):
+                            for name, function in implementations(*inputs, cfg, triton_attention).items():
+                                call = (lambda: forward_backward(function, inputs, upstream)) if training else function
+                                row = dict(case, implementation=name, phase=phase, status="ok")
+                                row.update(measure(call, device, cfg, do_bench))
+                                if name == "pytorch_naive":
+                                    baseline_ms = row["latency_ms"]
+                                row["speedup_vs_naive"] = baseline_ms / row["latency_ms"]
+                                report["benchmarks"].append(row)
+                                del call
                     # function 的闭包也持有 Q/K/V，离开本配置后释放。
-                    del function, q, k, v
+                    del function, inputs, upstream, q, k, v
                     save_report(root, report)
                     bar.set_postfix(dtype=case["dtype"], B=case["batch"], N=case["length"])
             report["plots"] = plot_results(report["benchmarks"], root)

@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+# 保留旧前向结果，新增报告包含前向和前向+反向两种测量。
+mode: forward_backward
+output_dir: artifacts/attention_train

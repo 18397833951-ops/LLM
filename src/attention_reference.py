@@ -26,6 +26,20 @@ def reference_attention(q, k, v, causal=True):
     return output
 
 
+def reference_gradients(q, k, v, grad_output, causal=True):
+    """逐 head 的 FP32 autograd oracle；不同时保留全部 head 的 N×N 图。"""
+    gradients = tuple(torch.empty(t.shape, dtype=torch.float32, device=t.device) for t in (q, k, v))
+    with torch.enable_grad():
+        for batch in range(q.shape[0]):
+            for head in range(q.shape[1]):
+                inputs = tuple(t[batch, head].detach().float().requires_grad_(True) for t in (q, k, v))
+                output = naive_attention(*inputs, causal=causal)
+                values = torch.autograd.grad(output, inputs, grad_output[batch, head].float())
+                for result, value in zip(gradients, values):
+                    result[batch, head] = value
+    return gradients
+
+
 def error_metrics(actual, expected, atol, rtol):
     actual, expected = actual.float(), expected.float()
     difference = (actual - expected).abs()

@@ -4,14 +4,14 @@
 
 ## 当前阶段：Triton Attention
 
-在服务器现有 CUDA 环境更新代码后，一次跑完前向正确性检查、全部规模测速和绘图：
+在服务器激活 `trackglimpse` 并更新代码后，一次跑完前向/梯度检查、前向及前向+反向测速和绘图：
 
 ```bash
 python -m pip install -r requirements-attention.txt
-python main.py stat=attention
+python main.py stat=attention attention=train
 ```
 
-结果保存到 `artifacts/attention/`。无需数据集或模型权重，不重新训练语言模型。实现和测量范围见 [Attention 实验说明](docs/attention.md)；GPU 数值及性能待服务器运行确认。
+新结果保存到 `artifacts/attention_train/`，保留已完成的前向结果。无需数据集或模型权重，不重新训练语言模型。前向已在服务器通过；新增反向的 GPU 数值和性能待服务器运行确认。见 [Attention 训练路径实验](docs/attention_training.md)。
 
 ## 当前训练配置
 

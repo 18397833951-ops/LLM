@@ -1,5 +1,6 @@
 # 一次完成所有配置的前向正确性检查、测速和绘图；不训练模型。
 device: cuda:0
+mode: forward
 seed: 42
 batch_sizes: [1, 4]
 heads: 12
@@ -18,4 +19,7 @@ edge_head_dims: [64, 128]
 tolerance:
   float16: {atol: 0.002, rtol: 0.01}
   bfloat16: {atol: 0.02, rtol: 0.05}
+gradient_tolerance:
+  float16: {atol: 0.004, rtol: 0.02}
+  bfloat16: {atol: 0.035, rtol: 0.05}
 output_dir: artifacts/attention
