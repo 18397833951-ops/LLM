@@ -1,0 +1,51 @@
+# 固定 token 预算的实验，不复用之前训练好的 0.1B 权重。
+source_dir: data/tinystories_full
+tokenizer_dir: artifacts/tokenizer_full
+# 可选：本地 JSONL（text 字段）或 Common Crawl WET/.wet.gz。
+# null 表示用已有 TinyStories train.jsonl 做进一步清洗对照。
+source_path: null
+source_format: jsonl
+train_documents: 50000
+val_documents: 2000
+output_dir: artifacts/science
+seeds: [42, 43, 44]
+token_budget: 16384000
+batch_size: 8
+grad_accum: 4
+context: 256
+dropout: 0.1
+lr: 0.0003
+min_lr: 0.00003
+warmup_steps: 100
+eval_every: 250
+save_every: 500
+# 只用于调试/续训检查；正式实验保持 null。
+stop_after: null
+cleaning:
+  strip_html: true
+  language_filter: true
+  min_latin_ratio: 0.85
+  min_chars: 80
+  max_chars: 6000
+  quality_filter: true
+  max_symbol_ratio: 0.35
+  min_unique_word_ratio: 0.12
+  redact_pii: true
+  exact_dedup: true
+  near_dedup: true
+  jaccard_threshold: 0.8
+  shingle_words: 5
+  permutations: 32
+  bands: 8
+models:
+  - {name: m2, layers: 4, width: 128, heads: 4}
+  - {name: m8, layers: 7, width: 256, heads: 4}
+  - {name: m14, layers: 6, width: 384, heads: 6}
+  - {name: m30, layers: 8, width: 512, heads: 8}
+comparison_model: m14
+holdout_model: {name: m106, layers: 14, width: 768, heads: 12}
+fit:
+  alpha_min: 0.01
+  alpha_max: 2.0
+  grid_points: 400
+  bootstrap_samples: 100

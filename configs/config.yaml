@@ -4,6 +4,7 @@ defaults:
   - model: gpt100m
   - train: default
   - attention: default
+  - science: default
   - _self_
   - experiment: null
 
