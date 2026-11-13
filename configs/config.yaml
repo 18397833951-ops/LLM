@@ -5,6 +5,8 @@ defaults:
   - train: default
   - attention: default
   - science: default
+  - alignment: default
+  - web: default
   - _self_
   - experiment: null
 

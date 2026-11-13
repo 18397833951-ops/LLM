@@ -1,0 +1,31 @@
+checkpoint: artifacts/gpt100m_full/best.pt
+tokenizer_dir: artifacts/tokenizer_full
+source_dir: data/tinystories_full
+output_dir: artifacts/alignment
+seed: 42
+train_examples: 4000
+dev_examples: 32
+test_examples: 64
+max_scan: 200000
+max_new_tokens: 144
+min_words: 20
+max_prompt_tokens: 80
+# 分组规则：关键词对稳定哈希 mod 10，0=test、1=dev，其余=train。
+keywords: [cat, dog, bird, rabbit, mouse, bear, fox, lion, duck, frog, fish, horse, tree, flower, ball, book, house, garden, forest, river, school, friend, mother, father, boat, car, sun, moon, star, cake, apple, water, door, window, hill, park, box, kite, hat, basket, bed, chair, song, toy]
+batch_size: 4
+grad_accum: 2
+eval_every: 100
+save_every: 100
+stop_after: null
+sft: {steps: 1000, lr: 0.00003, min_lr: 0.000003, warmup_steps: 50}
+dpo: {steps: 400, lr: 0.000005, min_lr: 0.000001, warmup_steps: 20, beta: 0.1}
+rlvr:
+  steps: 120
+  lr: 0.000005
+  min_lr: 0.000001
+  warmup_steps: 10
+  group_size: 4
+  kl_beta: 0.02
+  # 每步一个 prompt，采样 group_size 个回答，进行一次 on-policy 更新。
+  # 算法为 group-relative REINFORCE + 逐 token 分布 KL，非完整 PPO/GRPO。
+evaluation_seed: 2026

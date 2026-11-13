@@ -13,15 +13,33 @@ python main.py stat=attention attention=train
 
 结果保存到 `artifacts/attention_train/`，保留已完成的前向结果。前向与反向已在服务器通过，共 432 项比较、120 行测速。见 [Attention 训练路径实验](docs/attention_training.md)。
 
-## 当前阶段：数据清洗与 Scaling Law
+## 第三部分：数据清洗与 Scaling Law
 
-Attention 单卡前向/反向已在服务器完成 432 项比较和 120 行测速。第三部分代码已接入，默认复用服务器已有 TinyStories 做进一步清洗对照，并训练四档小模型与独立大模型检查外推：
+第三部分已在服务器完成 18 次等 token 预算实验，大模型外推相对误差约 2.46%。清洗前后的 token 校验值相同，说明本次规则没有改变已有 TinyStories 样本，不声称清洗提升效果。以下命令仅用于首次复现，已有结果无需重跑：
 
 ```bash
 python main.py stat=science
 ```
 
-默认包含 18 次短训练，每次 2000 步、同样的 token 预算。自动恢复断点并跳过已完成实验，输出保存在 `artifacts/science/`；实际实验结果待服务器运行。范围、局限和说明见 [第三部分实验](docs/science.md)。
+输出保存在 `artifacts/science/`。范围与局限见 [第三部分实验](docs/science.md)。
+
+## 当前阶段：第四部分与演示页面
+
+复用已有故事模型与数据，不下载另一套模型。在服务器更新代码后执行：
+
+```bash
+python main.py stat=align
+```
+
+自动完成 SFT、从同一 SFT 权重分支的 DPO/RLVR、统一测试、比较图和英文报告草稿。偏好为自动构造的关键词约束偏好，RLVR 为 on-policy 分组 REINFORCE+KL；效果以服务器运行结果为准。第五部分 Agent 不在本次范围。
+
+完成后启动本地演示服务：
+
+```bash
+python main.py stat=web
+```
+
+在 Windows 电脑用 SSH 转发 6006 端口后，浏览器打开 http://127.0.0.1:6006。详见 [第四部分说明](docs/alignment.md) 和 [页面使用说明](docs/demo.md)。
 
 ## 当前训练配置
 
@@ -50,6 +68,8 @@ git pull --ff-only
 - [全量训练流程](docs/full_run.md)：按顺序完成本地准备、上传数据、服务器训练和恢复。
 - [Attention 实验](docs/attention.md)
 - [清洗与 Scaling Law](docs/science.md)
+- [SFT / DPO / RLVR](docs/alignment.md)
+- [演示页面](docs/demo.md)
 - [数据准备](docs/data_usage.md)
 - [分词器](docs/tokenizer.md)
 - [模型与训练说明](docs/training.md)
